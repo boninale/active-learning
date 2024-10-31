@@ -1,0 +1,12 @@
+venv
+template copy.yaml
+template.yaml
+features.pkl
+preds_df.pkl
+plot_features.py
+utils/kcenter_greedy.py
+utils/sample.py
+utils/sampling_def.py
+utils/select_deepcore.py
+active_learning.py
+active_learning_test.ipynb
