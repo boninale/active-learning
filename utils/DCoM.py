@@ -24,8 +24,6 @@ from sklearn.preprocessing import MinMaxScaler
 from tqdm import tqdm
 from scipy.spatial.distance import pdist, squareform
 
-from utils.preprocessing import preprocess_image, CustomDataset
-
 class DCoM:
     """
     AL algorithm that selects the next centroids based on point density and model confidence, which measured

@@ -7,27 +7,46 @@ from PIL import Image, UnidentifiedImageError
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-class CustomDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
-        self.root_dir = root_dir
-        self.transform = transform
-        self.image_paths = [os.path.join(root_dir, fname) for fname in os.listdir(root_dir) if fname.endswith(('jpg', 'jpeg', 'png'))]
+# Define optimized Dataset class
+class ImageDataset(Dataset):
+    def __init__(self, img_list, data_path, device, img_size=(224, 224)):
+        self.img_list = img_list
+        self.data_path = data_path
+        self.device = device
+        self.transform = transforms.Compose([
+            transforms.Resize(img_size),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
 
     def __len__(self):
-        return len(self.image_paths)
+        return len(self.img_list)
 
     def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
-        if self.transform:
-            img = self.transform(img_path)
-            return img, idx  # Return the image and its index
-        return img_path, idx  # Return the image and its index
-
+        img_name = self.img_list[idx]
+        img_path = os.path.join(self.data_path, img_name)
+        try:
+            image = Image.open(img_path).convert('RGB')
+            image = self.transform(image).to(self.device)  # Preprocess directly on GPU
+            return img_name, image
+        
+        except UnidentifiedImageError:
+            print(f"Skipping corrupted image: {img_path}")
+            return None
+        
+def custom_collate(batch):
+    # Filter out None samples
+    batch = [item for item in batch if item is not None]
+    if len(batch) == 0:
+        return None
+    img_names, img_tensors = zip(*batch)
+    img_tensors = torch.stack(img_tensors, dim=0)
+    return img_names, img_tensors
+        
 def create_training_generators(datapath, val_path = None, batch_size=64, val_split=0.2, IMG_SIZE = (224, 224), num_workers = 6):
     """Create training and validation data generators."""
     transform = transforms.Compose([
-        v2.Resize(size=IMG_SIZE, antialias=True),
-        v2.RandomHorizontalFlip(p=0.5),
+          v2.RandomHorizontalFlip(p=0.5),
         v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=True)]),
         v2.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
