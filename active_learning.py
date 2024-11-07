@@ -8,6 +8,7 @@ import random
 import shutil
 from tqdm import tqdm
 from torch.utils.data import DataLoader
+import torch.multiprocessing as mp
 from sklearn.preprocessing import Normalizer
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
@@ -31,6 +32,7 @@ torch.backends.cudnn.benchmark = False
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+
 # mode = 'segmentation'
 # data_path = r'C:\Users\Alexandre Bonin\Documents\Stage\datasets\Dataset_fixe_2024'
 # model_path = r'C:\Users\Alexandre Bonin\Documents\Stage\Code segmentation (Leo)\Models\VL_2024+basemodelproxicam.pt'
@@ -44,9 +46,12 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 #             ).to(device)
 
 mode = 'classification'
-data_path = r'C:\Users\Alexandre Bonin\Documents\Stage\datasets\ProspectFD\sample_PFD'
-model_path = r'C:\Users\Alexandre Bonin\Documents\Stage\Classification-model-IMS\models\Run_2024-10-16_14-15-17.pth'
+data_path = r'/home/abonin/Desktop/datasets/sample_PFD'
+model_path = r'/home/abonin/Desktop/Classification-model/models/Run_2024-10-16_14-15-17.pth'
 model = EffNetB0(num_classes=2, model_path = model_path, extract_features = True).to(device)
+
+budgetSize = 1000
+batch_size = 128
 
 output_dir = os.path.join(data_path + '/DCoM')
 
@@ -70,51 +75,58 @@ if __name__ == '__main__':
 
     # Iterate over the images in the directory
     img_list = [fname for fname in os.listdir(data_path) if fname.endswith(('jpg', 'jpeg', 'png'))]
-    img_list = [img_name for img_name in img_list[:500]]
+    img_list = [img_name for img_name in img_list[:]]
 
-    # # Check if the pickle files exist
-    # if os.path.exists(features_file) :
-    #     with open(features_file, 'rb') as f:
-    #         features = pickle.load(f)
-
-    # if os.path.exists(pseudo_labels_file):
-    #     with open(pseudo_labels_file, 'rb') as f:
-    #         pseudo_labels = pickle.load(f)
-
-    # if os.path.exists(pred_file): #Make sure it is the right file
-    #     print("Loading features and predictions from pickle files...")
-    #     # Load the variables from the pickle files
-    #     with open(pred_file, 'rb') as f:
-    #         pred_df = pickle.load(f)
-        
-    # else :
     # Initialize a DataFrame to store file paths and prediction probabilities
     pred_df = pd.DataFrame(columns=['img_name', 'pred', 'delta', 'true_label'])
     # pred_df['img_name'] = img_list
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Check if the pickle files exist
+    if os.path.exists(features_file) :
+        print("Loading features from pickle files...")
+        with open(features_file, 'rb') as f:
+            features = pickle.load(f)
 
-    num_workers = (4 if device.type == 'cuda' else 0)
+    if os.path.exists(pseudo_labels_file):
+        print("Loading predictions from pickle files...")
+
+        with open(pseudo_labels_file, 'rb') as f:
+            pseudo_labels = pickle.load(f)
+
+    if os.path.exists(pred_file): #Make sure it is the right file
+        print("Loading pred_df from pickle files...")
+        pred_backup = True
+        # Load the variables from the pickle files
+        with open(pred_file, 'rb') as f:
+            pred_df = pickle.load(f)
+
+
+    if mp.get_start_method(allow_none=True) != 'spawn':
+        mp.set_start_method('spawn', force=True)
+
+    num_workers = (8 if device.type == 'cuda' else 0)
+    print(f'Number of workers: {num_workers}')
 
     # Define the transform and dataset
     dataset = ImageDataset(img_list, data_path, device=device)
     print(f'Number of images: {len(dataset)}')
 
-    data_loader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=num_workers, pin_memory=True, collate_fn=custom_collate)
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=custom_collate)
 
     # Process images in batches
     model = model.to(device)
     model.eval()
 
     # Batch processing to optimize GPU usage
-    for batch in tqdm(data_loader):
-
-        if batch is None:
-            continue  # Skip batches with no valid samples
-
-        img_names, img_batch = batch
-        img_batch = img_batch.to(device)  # Move batch to GPU
+    for img_names, img_batch in tqdm(data_loader):
+        # Filter out None values caused by skipped corrupted images
+        img_names = [name for name, img in zip(img_names, img_batch) if img is not None]
+        img_batch = [img for img in img_batch if img is not None]
         
+        if not img_batch:  # Skip empty batches
+            continue
+
+        img_batch = torch.stack(img_batch).to(device)  # Batch all valid images together on GPU
 
         with torch.no_grad():
             # Get model predictions and features
@@ -123,14 +135,8 @@ if __name__ == '__main__':
 
         new_rows = []
 
-        for i, img_name in enumerate(img_names):
-
-            feature = feature_batch[i].squeeze().cpu().numpy()
-            pred = pred_batch[i]
-
-            # Append features and handle segmentation/classification cases
-            features.append(feature)
-
+        for img_name, pred, feature in zip(img_names, pred_batch, feature_batch):
+            
             if mode == 'segmentation':
                 # Compute max probability and positive proportion for segmentation
                 max_probs, binary = torch.max(pred, dim=0)
@@ -147,8 +153,14 @@ if __name__ == '__main__':
                 # pred_df.loc[pred_df['img_name'] == img_name, 'pred'] = pred.max().cpu().item()
                 new_rows.append({'img_name': img_name, 'pred': pred.max().cpu().item(), 'delta': None, 'true_label': None})
 
+            features.append(feature.cpu().numpy())
+
         temp_df = pd.DataFrame(new_rows)
-        pred_df = pd.concat([pred_df, temp_df], ignore_index=True)
+        if pred_backup:
+            for row in new_rows:
+                pred_df.loc[pred_df['img_name'] == row['img_name'], 'pred'] = row['pred']
+        else :
+            pred_df = pd.concat([pred_df, temp_df], ignore_index=True)
 
     # Convert to numpy arrays for further processing
     features = np.array(features, dtype=np.float32)
@@ -159,8 +171,6 @@ if __name__ == '__main__':
         pseudo_labels = pd.cut(pseudo_labels, bins, labels=[0, 1, 2, 3, 4]).astype(int)
 
     print(pred_df.shape)
-
-    raise SystemExit
 
     # Flatten each feature
     N = features.shape[0]
@@ -181,7 +191,14 @@ if __name__ == '__main__':
 
     #endregion
 
-    breakpoint()
+    # with open(os.path.join(output_dir,'features.pkl'), 'wb') as f:
+    #     pickle.dump(features, f)
+
+    # with open(os.path.join(output_dir, 'pseudo_labels.pkl'), 'wb') as f:
+    #     pickle.dump(pseudo_labels, f)
+    
+    # print(f'Saved features and pseudo labels files \n')
+
 
     #region Dcom sample
 
@@ -189,44 +206,38 @@ if __name__ == '__main__':
     lSet_labels = pred_df.loc[lSet, 'true_label'].values.tolist()
     lSet_deltas = pred_df.loc[lSet, 'delta'].values.tolist()
 
-    print(f'lSet : {lSet}')
-
-    budgetSize = 6
-
     dcom = DCoM(features, lSet, budgetSize = budgetSize, lSet_deltas=lSet_deltas)
     active_set, new_uset, active_deltas = dcom.select_samples(pred_df)
-    sampled_images = []
-
-
-    for i, idx in enumerate(active_set):
-        sampled_images.append(pred_df.iloc[int(idx)]['img_name'])
-        pred_df.iloc[int(idx), pred_df.columns.get_loc('delta')] = active_deltas[i]
-
-    print(f'2: {pred_df.loc[pred_df['delta'].notna()]}')
 
     # Save the sampled images to a new directory
     output_subdir = os.path.join(output_dir, 'samples')
 
-    if not os.path.exists(output_subdir):
-        os.makedirs(output_subdir, exist_ok=True)
+    # if not os.path.exists(output_subdir):
+    #     os.makedirs(output_subdir, exist_ok=True)
 
-    print("Sampled image:")
-    for img_name in sampled_images:
-        img = os.path.join(data_path, img_name)
-        output_path = os.path.join(output_subdir, img_name)
-        shutil.copy(img, output_path)
-        print(output_path)
+    # for i, idx in enumerate(active_set):
+    #     pred_df.iloc[int(idx), pred_df.columns.get_loc('delta')] = active_deltas[i]
+    #     img_name = pred_df.iloc[int(idx)]['img_name']
+    #     pseudo_label = str(int(pseudo_labels[int(idx)]))
 
-    # Define the path to the labels subfolder
-    labels_folder = os.path.join(output_dir, 'labels')
+    #     # Create a subdirectory for this pseudo label if it doesn't exist
+    #     label_subdir = os.path.join(output_subdir, pseudo_label)
+    #     os.makedirs(label_subdir, exist_ok=True)
+        
+    #     # Copy the image to the corresponding pseudo label subdirectory
+    #     output_path = os.path.join(label_subdir, os.path.basename(img_name))
+    #     shutil.copy(os.path.join(data_path, img_name), output_path)
+    
+    # # Define the path to the labels subfolder
+    # labels_folder = os.path.join(output_dir, 'labels')
 
-    if not os.path.exists(labels_folder):
-        os.makedirs(labels_folder, exist_ok=True)
+    # if not os.path.exists(labels_folder):
+    #     os.makedirs(labels_folder, exist_ok=True)
 
-    # Determine the number of rows and columns for the grid
-    num_images = len(sampled_images)
-    num_cols = 5  # Number of columns
-    num_rows = (num_images + num_cols - 1) // num_cols  # Calculate the number of rows needed
+    # # Determine the number of rows and columns for the grid
+    # num_images = len(active_set)
+    # num_cols = 5  # Number of columns
+    # num_rows = (num_images + num_cols - 1) // num_cols  # Calculate the number of rows needed
 
     # # Display the images in a grid layout
     # plt.figure(figsize=(20, 10))
@@ -245,6 +256,12 @@ if __name__ == '__main__':
     # plt.show()
 
     #endregion
+    with open(os.path.join(output_dir,'pred_df.pkl'), 'wb') as f:
+        pickle.dump(pred_df, f)
+    
+    print('Breakpoint : label the images, then type c in the terminal to continue.')
+    breakpoint()
+
     #region Dcom update D
 
     labels_folder = os.path.join(output_dir, 'labels')
@@ -328,7 +345,13 @@ if __name__ == '__main__':
 
     # Add a legend to highlight the sampled points
     plt.legend()
-
+    # Save the plot to the dcom folder
+    plot_path = os.path.join(output_dir, 'features_plot.png')
+    plt.savefig(plot_path)
     plt.show()
+
+    with open(os.path.join(output_dir,'pred_df.pkl'), 'wb') as f:
+        pickle.dump(pred_df, f)
+    
 
 
