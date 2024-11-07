@@ -18,6 +18,7 @@
 import pandas as pd
 import numpy as np
 import torch
+import random
 from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets
 from sklearn.preprocessing import MinMaxScaler
@@ -37,6 +38,8 @@ class DCoM:
 
     def __init__(self, features, lSet, budgetSize, lSet_deltas):
 
+        print(f'Initializing DCoM algorithm.')
+
         self.features = features
         self.all_idx = list(range(len(features)))
 
@@ -49,12 +52,19 @@ class DCoM:
         self.k_logistic = 50 #Value used in initial paper
         self.a_logistic = 0.8 #Value used in initial paper
 
+
         self.relevant_indices = np.concatenate([self.lSet, self.uSet]).astype(int)# indices of lSet and then uSet in all_features
         self.rel_features = self.features[self.relevant_indices]  # features of lSet and then uSet
 
-        self.max_delta = pdist(features).max()*2 #1.3 #Value used in initial paper
-        print(f'Max delta is {self.max_delta}')
+        if len(features) > 500 :
+            sample_indices = np.random.choice(len(features), size=500, replace=False)
+            sample_features = features[sample_indices]
+            
+        else:
+            sample_features = features
 
+        self.max_delta = pdist(sample_features).max() * 2
+        print(f'Max delta is {self.max_delta}')
         # if not lSet_deltas or any(not isinstance(delta, float) or delta <= 0 for delta in lSet_deltas):  # Check if lSet_deltas is empty or None
         #     self.initial_delta = self.compute_initial_delta(self.rel_features)    
         #     if len(self.lSet) == 0:
@@ -75,11 +85,11 @@ class DCoM:
         #     self.lSet_deltas = [float(delta) for delta in lSet_deltas]
 
         if not lSet_deltas :
-            self.initial_delta = self.compute_initial_delta(self.rel_features)
+            self.initial_delta = self.compute_initial_delta(sample_features)
             self.lSet_deltas = [self.initial_delta for _ in range(self.budgetSize)]
         else:
             self.lSet_deltas = []
-            self.initial_delta = self.compute_initial_delta(self.rel_features)
+            self.initial_delta = self.compute_initial_delta(sample_features)
             for i, delta in enumerate(lSet_deltas):
                 try:
                     delta = float(delta)
@@ -94,9 +104,12 @@ class DCoM:
         self.delta_avg = np.average(self.lSet_deltas) if self.lSet_deltas else 0
 
     def compute_initial_delta(self, features):
-        distances = pdist(features)  # pairwise distances
-        delta0 = np.median(distances)  # or use np.mean(distances)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        features_tensor = torch.tensor(features).to(device)
+        distances = torch.cdist(features_tensor, features_tensor)
+        delta0 = torch.median(distances).item()
         print(f'Initial delta is {delta0}')
+
         return delta0
     
     def construct_graph_excluding_lSet(self, delta=None, batch_size=64):
@@ -116,22 +129,30 @@ class DCoM:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         cuda_feats = torch.tensor(self.rel_features).to(device)
 
-        for i in range(len(self.rel_features) // batch_size):
-            # distance comparisons are done in batches to reduce memory consumption
-            cur_feats = cuda_feats[i * batch_size: (i + 1) * batch_size]
+        num_samples = len(self.rel_features)
+        num_batches = (num_samples + batch_size - 1) // batch_size
+
+        for i in range(num_batches):
+            start_idx = i * batch_size
+            end_idx = min((i + 1) * batch_size, num_samples)
+            cur_feats = cuda_feats[start_idx:end_idx]
             dist = torch.cdist(cur_feats, cuda_feats)
             mask = dist < delta
-            # saving edges using indices list - saves memory.
-            x, y = mask.nonzero().T
-            xs.append(x.cpu() + batch_size * i)
-            ys.append(y.cpu())
-            ds.append(dist[mask].cpu())
+            x, y = mask.nonzero(as_tuple=True)
+            xs.append(x + start_idx)
+            ys.append(y)
+            ds.append(dist[mask])
 
-        xs = torch.cat(xs).numpy()
-        ys = torch.cat(ys).numpy()
-        ds = torch.cat(ds).numpy()
+        xs = torch.cat(xs)
+        ys = torch.cat(ys)
+        ds = torch.cat(ds)
 
-        df = pd.DataFrame({'x': xs, 'y': ys, 'd': ds})
+        df = pd.DataFrame({
+            'x': xs.cpu().numpy(),
+            'y': ys.cpu().numpy(),
+            'd': ds.cpu().numpy()
+        })
+        
         print(f'Before delete lSet neighbors: Graph contains {len(df)} edges.')
         return df
 
@@ -222,8 +243,6 @@ class DCoM:
         remainSet = np.array(sorted(list(set(self.uSet) - set(activeSet))))
         assert len(np.intersect1d(self.lSet, activeSet)) == 0, 'all samples should be new'
         print(f'Finished the selection of {len(activeSet)} samples.')
-        print(f'Active set is {activeSet}')
-        print(f'Active delta is {self.lSet_deltas}')
         return activeSet, remainSet, self.lSet_deltas
 
     def new_centroids_deltas(self, lSet_labels, pseudo_labels, budget, batch_size=64, all_labels=[]):
@@ -285,7 +304,7 @@ class DCoM:
             while abs(low_del_val - max_del_val) > self.delta_resolution:
                 # curr_purity = check_purity(df, cent_label=lSet_labels[cent_idx], delta=mid_del_val)
                 curr_purity = check_purity(df, cent_label=pseudo_labels[centroid], delta=mid_del_val)
-                print("centroid: ", centroid, ", idx: ", cent_idx, ". delta = ", mid_del_val, " and purity = ", curr_purity)
+                print("centroid: ", centroid, ". idx: ", cent_idx, ". delta = ", mid_del_val, " and purity = ", curr_purity)
 
                 if last_delta < mid_del_val and last_purity == purity_threshold and curr_purity < purity_threshold:
                     mid_del_val = last_delta
@@ -310,36 +329,21 @@ class DCoM:
 
         self.lSet_deltas = [float(delta) for delta in new_deltas]
         self.lSet_deltas_dict = dict(zip(np.arange(len(self.lSet)), self.lSet_deltas))
-        print("All new deltas: ", new_deltas, '\n')
+        print("All new deltas: ", '\n')
         return new_deltas
 
     def calculate_density(self, df):
-
-        rank_mapping = pd.DataFrame(df.groupby('x')['y'].count())
-        all_indices_df = pd.DataFrame(index=np.arange(len(self.relevant_indices)))
-        result_df = pd.merge(all_indices_df, rank_mapping, left_index=True, right_index=True, how='left').fillna(0)
-
-        return np.array(result_df)
+        counts = np.bincount(df['x'].values, minlength=len(self.relevant_indices))
+        return counts
 
     def calculate_margin(self, pred_probas):
         print(f'Start calculating points margin.')
-
-        ranks = []
-
-        # Iterate over the rows of pred_probas
-        for index, row in pred_probas.iterrows():
-            uncertainty = -1* row['pred']  # Extract the prediction probabilities
-            ranks.append(uncertainty)
-
-        ranks = np.array(ranks)
-
+        ranks = -1 * pred_probas['pred'].values
         margin_result = ranks.reshape(-1, 1)
         scaler = MinMaxScaler()
-        normalized_margin_result = scaler.fit_transform(margin_result)
-        final_margin_result = normalized_margin_result.flatten().tolist()
-        
-        return final_margin_result
+        normalized_margin_result = scaler.fit_transform(margin_result).flatten()
 
+        return normalized_margin_result.tolist()
     '''
     The original method used in the paper is the following:
     I changed it to uncertainty in order to be able to use it with segmentation models as well. 
