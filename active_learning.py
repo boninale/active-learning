@@ -1,4 +1,4 @@
-# region imports
+# region Initialization
 from PIL import Image
 import os
 import numpy as np
@@ -53,6 +53,8 @@ model = EffNetB0(num_classes=2, model_path = model_path, extract_features = True
 budgetSize = 1000
 batch_size = 128
 
+SAVE = True
+
 output_dir = os.path.join(data_path + '/DCoM')
 
 
@@ -69,36 +71,39 @@ if __name__ == '__main__':
     features = []
     pseudo_labels = []
 
+
     features_file = os.path.join(output_dir, 'features.pkl')
     pred_file = os.path.join(output_dir, 'pred_df.pkl')
     pseudo_labels_file = os.path.join(output_dir, 'pseudo_labels.pkl')
 
     # Iterate over the images in the directory
     img_list = [fname for fname in os.listdir(data_path) if fname.endswith(('jpg', 'jpeg', 'png'))]
-    img_list = [img_name for img_name in img_list[:]]
+    img_list = [img_name for img_name in img_list[:7000]]
 
     # Initialize a DataFrame to store file paths and prediction probabilities
     pred_df = pd.DataFrame(columns=['img_name', 'pred', 'delta', 'true_label'])
+    pred_backup = False 
     # pred_df['img_name'] = img_list
 
-    # Check if the pickle files exist
-    if os.path.exists(features_file) :
-        print("Loading features from pickle files...")
-        with open(features_file, 'rb') as f:
-            features = pickle.load(f)
 
-    if os.path.exists(pseudo_labels_file):
-        print("Loading predictions from pickle files...")
+    # # Check if the pickle files exist
+    # if os.path.exists(features_file) :
+    #     print("Loading features from pickle files...")
+    #     with open(features_file, 'rb') as f:
+    #         features = pickle.load(f)
 
-        with open(pseudo_labels_file, 'rb') as f:
-            pseudo_labels = pickle.load(f)
+    # if os.path.exists(pseudo_labels_file):
+    #     print("Loading predictions from pickle files...")
 
-    if os.path.exists(pred_file): #Make sure it is the right file
-        print("Loading pred_df from pickle files...")
-        pred_backup = True
-        # Load the variables from the pickle files
-        with open(pred_file, 'rb') as f:
-            pred_df = pickle.load(f)
+    #     with open(pseudo_labels_file, 'rb') as f:
+    #         pseudo_labels = pickle.load(f)
+
+    # if os.path.exists(pred_file): #Make sure it is the right file
+    #     print("Loading pred_df from pickle files...")
+    #     pred_backup = True
+    #     # Load the variables from the pickle files
+    #     with open(pred_file, 'rb') as f:
+    #         pred_df = pickle.load(f)
 
 
     if mp.get_start_method(allow_none=True) != 'spawn':
@@ -156,7 +161,7 @@ if __name__ == '__main__':
             features.append(feature.cpu().numpy())
 
         temp_df = pd.DataFrame(new_rows)
-        if pred_backup:
+        if pred_backup :
             for row in new_rows:
                 pred_df.loc[pred_df['img_name'] == row['img_name'], 'pred'] = row['pred']
         else :
@@ -209,16 +214,16 @@ if __name__ == '__main__':
     dcom = DCoM(features, lSet, budgetSize = budgetSize, lSet_deltas=lSet_deltas)
     active_set, new_uset, active_deltas = dcom.select_samples(pred_df)
 
-    # Save the sampled images to a new directory
-    output_subdir = os.path.join(output_dir, 'samples')
+    # # Save the sampled images to a new directory
+    # output_subdir = os.path.join(output_dir, 'samples')
 
     # if not os.path.exists(output_subdir):
     #     os.makedirs(output_subdir, exist_ok=True)
 
-    # for i, idx in enumerate(active_set):
-    #     pred_df.iloc[int(idx), pred_df.columns.get_loc('delta')] = active_deltas[i]
-    #     img_name = pred_df.iloc[int(idx)]['img_name']
-    #     pseudo_label = str(int(pseudo_labels[int(idx)]))
+    for i, idx in enumerate(active_set):
+        pred_df.iloc[int(idx), pred_df.columns.get_loc('delta')] = active_deltas[i]
+        img_name = pred_df.iloc[int(idx)]['img_name']
+        pseudo_label = str(int(pseudo_labels[int(idx)]))
 
     #     # Create a subdirectory for this pseudo label if it doesn't exist
     #     label_subdir = os.path.join(output_subdir, pseudo_label)
@@ -228,11 +233,11 @@ if __name__ == '__main__':
     #     output_path = os.path.join(label_subdir, os.path.basename(img_name))
     #     shutil.copy(os.path.join(data_path, img_name), output_path)
     
-    # # Define the path to the labels subfolder
-    # labels_folder = os.path.join(output_dir, 'labels')
+    # Define the path to the labels subfolder
+    labels_folder = os.path.join(output_dir, 'labels')
 
-    # if not os.path.exists(labels_folder):
-    #     os.makedirs(labels_folder, exist_ok=True)
+    if not os.path.exists(labels_folder):
+        os.makedirs(labels_folder, exist_ok=True)
 
     # # Determine the number of rows and columns for the grid
     # num_images = len(active_set)
@@ -256,8 +261,9 @@ if __name__ == '__main__':
     # plt.show()
 
     #endregion
-    with open(os.path.join(output_dir,'pred_df.pkl'), 'wb') as f:
-        pickle.dump(pred_df, f)
+    if SAVE:
+        with open(os.path.join(output_dir,'pred_df.pkl'), 'wb') as f:
+            pickle.dump(pred_df, f)
     
     print('Breakpoint : label the images, then type c in the terminal to continue.')
     breakpoint()
@@ -297,7 +303,6 @@ if __name__ == '__main__':
         pred_df['true_label'] = pd.cut(pred_df['true_label'], bins = bins, labels = [0, 1, 2, 3, 4])
 
     lSet = pred_df.loc[pred_df['true_label'].notna()].index.tolist()
-    print(f'lSet : {lSet}')
 
     for i in list(set(pred_df.index)): #Ensures only the images in the labeled set have a delta
         if pred_df.at[i, 'true_label'] is np.nan:
@@ -306,40 +311,48 @@ if __name__ == '__main__':
     lSet_labels = pred_df.loc[lSet, 'true_label'].values.tolist()
     lSet_deltas = pred_df.loc[lSet, 'delta'].values.tolist()
 
-    print(f'lSet : {lSet}')
-    print(f'lSet_labels : {lSet_labels}')
-    print(f'lSet_deltas : {lSet_deltas}')
+    sample_lSet = random.sample(range(len(lSet)), min(10, len(lSet)))
+
+    print(f'lSet : {sample_lSet}')
+    print(f'lSet_labels : {[lSet_deltas[i] for i in sample_lSet]}')
+    print(f'lSet_deltas : {[lSet_deltas[i] for i in range(len(sample_lSet))]}')
 
     dcom = DCoM(features, lSet, budgetSize = budgetSize, lSet_deltas=lSet_deltas)
     lSet_deltas[-1 * budgetSize:] = dcom.new_centroids_deltas(lSet_labels, pseudo_labels=pseudo_labels, budget= budgetSize)
 
     # Update the deltas in the pred_df DataFrame
     pred_df.loc[lSet, 'delta'] = lSet_deltas
-
+    print('Finished udating deltas \n')
     #endregion
-    #region plot
+    #region Plot features
 
     # Visualize the features in 2D using t-SNE
     tsne = TSNE(n_components=2, random_state = 42)
     features_2d = tsne.fit_transform(features)
 
     # Extract the 2D coordinates for the sampled points
-    sampled_points_2d = features_2d[lSet]
+    sampled_points = features_2d[active_set]
+    labeled_points =  features_2d[lSet]
+
+    S = min(15000 / features_2d.shape[0], 50) # Scale the size of the points based on the number of features
 
     plt.figure(figsize=(12, 6))
-    plt.scatter(features_2d[:, 0], features_2d[:, 1], c=pseudo_labels, cmap='viridis', s=30, label = 'Predicted pseudo-labels')
+    plt.scatter(features_2d[:, 0], features_2d[:, 1], c=pseudo_labels, cmap='viridis', s=S, label = 'Predicted pseudo-labels')
     # plt.scatter(sampled_points_2d[:, 0], sampled_points_2d[:, 1], c=pred_df.loc[pred_df['true_label'].notna(),'true_label'], cmap='viridis', s=31)
     # Add circles of radius delta around points from lSet
     ax = plt.gca()
     for i, point_idx in enumerate(lSet):
         point_2d = features_2d[point_idx]
         delta = float(lSet_deltas[i])
-        circle = Circle(point_2d, radius=delta, color='blue', fill=False, linestyle='-', linewidth=0.5)
+        if len(lSet) > 50 :
+            circle = Circle(point_2d, radius=delta, fill=True, facecolor='lightblue', alpha=0.1, linewidth=0.2)
+        else :
+            circle = Circle(point_2d, radius=delta, color='blue', fill=False, linestyle='-', linewidth=0.5)
         ax.add_patch(circle)
 
+    plt.scatter(labeled_points[:, 0], labeled_points[:, 1], c='green', edgecolors='green', marker='o', s=S*1.04, label='Labeled points')
     # Highlight the sampled points in a different color or marker (e.g., red stars)
-    plt.scatter(sampled_points_2d[:, 0], sampled_points_2d[:, 1], c='red', marker='*', s=40, label='Sampled points')
-
+    plt.scatter(sampled_points[:, 0], sampled_points[:, 1], c='red', edgecolors='red', marker='o', s=S*1.05, label='Sampled points')
     plt.colorbar()
     plt.title("Features Colored by Predicted Labels")
 
@@ -350,8 +363,10 @@ if __name__ == '__main__':
     plt.savefig(plot_path)
     plt.show()
 
-    with open(os.path.join(output_dir,'pred_df.pkl'), 'wb') as f:
-        pickle.dump(pred_df, f)
-    
+    if SAVE:
+        with open(os.path.join(output_dir,'pred_df.pkl'), 'wb') as f:
+            pickle.dump(pred_df, f)
+        print('Saved pred_df file \n')
+        
 
 
