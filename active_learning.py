@@ -46,14 +46,14 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 #             ).to(device)
 
 mode = 'classification'
-data_path = r'/home/abonin/Desktop/datasets/sample_Luchey'
-model_path = r'/home/abonin/Desktop/Classification-model/models/Run_2024-10-16_14-15-17.pth'
+data_path = r'C:\Users\Alexandre Bonin\Documents\Stage\datasets\ProspectFD\sample_PFD'
+model_path = r'C:\Users\Alexandre Bonin\Documents\Stage\Classification-model-IMS\models\Run_2024-10-16_14-15-17.pth'
 model = EffNetB0(num_classes=2, model_path = model_path, extract_features = True).to(device)
 
-budgetSize = 1000
-batch_size = 128
+budgetSize = 50
+batch_size = 64
 
-save_pred_df = True
+save_pred_df = False
 save_samples = True
 
 output_dir = os.path.join(data_path + '/DCoM')
@@ -79,7 +79,7 @@ if __name__ == '__main__':
 
     # Iterate over the images in the directory
     img_list = [fname for fname in os.listdir(data_path) if fname.endswith(('jpg', 'jpeg', 'png'))]
-    img_list = [img_name for img_name in img_list[:]]
+    img_list = [img_name for img_name in img_list[:500]]
 
     # Initialize a DataFrame to store file paths and prediction probabilities
     pred_df = pd.DataFrame(columns=['img_name', 'pred', 'delta', 'true_label'])
@@ -344,7 +344,7 @@ if __name__ == '__main__':
     sampled_points = features_2d[active_set]
     labeled_points =  features_2d[lSet]
 
-    S = 15000 / features_2d.shape[0]
+    S = min(15000 / features_2d.shape[0], 30)
 
     plt.figure(figsize=(12, 6))
     # Add circles of radius delta around points from lSet
@@ -352,15 +352,12 @@ if __name__ == '__main__':
     for i, point_idx in enumerate(lSet):
         point_2d = features_2d[point_idx]
         delta = float(lSet_deltas[i])
-        if len(lSet) > 50 :
-            circle = Circle(point_2d, radius=delta, fill=True, facecolor='lightblue', alpha=0.2, linewidth=0.2)
-        else :
-            circle = Circle(point_2d, radius=delta, color='blue', fill=False, linestyle='-', linewidth=0.5)
+        circle = Circle(point_2d, radius=delta, fill=True, facecolor='lightblue', alpha=0.8, linestyle='-', linewidth=0.6)
         ax.add_patch(circle)
-    # Highlight the sampled points and labeled points in a different color or marker (e.g., red stars)
-    plt.scatter(labeled_points[:, 0], labeled_points[:, 1], c='green', edgecolors='green', marker='o', s=S*1.04, label='Labeled points')
-    plt.scatter(sampled_points[:, 0], sampled_points[:, 1], c='red', edgecolors='red', marker='o', s=S*1.05, label='Sampled points')
     plt.scatter(features_2d[:, 0], features_2d[:, 1], c=pseudo_labels, cmap='viridis', s=S, label = 'Predicted pseudo-labels')
+    # Highlight the sampled points and labeled points in a different color or marker (e.g., red stars)
+    plt.scatter(labeled_points[:, 0], labeled_points[:, 1], c='green', edgecolors='green', marker='*', s=S*1.04, label='Labeled points')
+    plt.scatter(sampled_points[:, 0], sampled_points[:, 1], c='red', edgecolors='red', marker='*', s=S*1.05, label='Sampled points')
     # plt.scatter(sampled_points_2d[:, 0], sampled_points_2d[:, 1], c=pred_df.loc[pred_df['true_label'].notna(),'true_label'], cmap='viridis', s=31)
     plt.colorbar()
     plt.title("Features Colored by Predicted Labels")

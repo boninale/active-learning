@@ -398,7 +398,7 @@ class DCoM:
             # If on CPU, use a more memory-efficient approach
             if not is_gpu:
                 for i, (cent_idx, cent_label, delta) in enumerate(zip(cent_idx_batch, cent_labels_batch, deltas_batch)):
-                    neighbor_mask = (df_x.cpu().numpy() == cent_idx) & (df_d.cpu().numpy() < delta)
+                    neighbor_mask = (df_x.cpu().numpy() == cent_idx) & (df_d.cpu().numpy() < delta.cpu().numpy())
                     neighbors_idx = df_y[neighbor_mask] if len(neighbor_mask) > 0 else []
 
                     if len(neighbors_idx) > 0:
