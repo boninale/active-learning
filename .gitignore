@@ -2,7 +2,8 @@ venv
 test
 *.yaml
 *.pkl
-*.png
+Dcom fig1.png
+Dcom fig2.png
 plot_features.py
 utils/__pycache__
 utils/kcenter_greedy.py
