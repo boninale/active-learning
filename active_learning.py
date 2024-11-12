@@ -230,13 +230,18 @@ if __name__ == '__main__':
         pseudo_label = str(int(pseudo_labels[int(idx)]))
 
         if save_samples:
-            # Create a subdirectory for this pseudo label if it doesn't exist
-            label_subdir = os.path.join(output_subdir, pseudo_label)
-            os.makedirs(label_subdir, exist_ok=True)
-            
-            # Copy the image to the corresponding pseudo label subdirectory
-            output_path = os.path.join(label_subdir, os.path.basename(img_name))
-            shutil.copy(os.path.join(data_path, img_name), output_path)
+            if mode == 'classification':
+                # Create a subdirectory for this pseudo label if it doesn't exist
+                label_subdir = os.path.join(output_subdir, pseudo_label)
+                os.makedirs(label_subdir, exist_ok=True)
+                
+                # Copy the image to the corresponding pseudo label subdirectory
+                output_path = os.path.join(label_subdir, os.path.basename(img_name))
+                shutil.copy(os.path.join(data_path, img_name), output_path)
+            elif mode == 'segmentation':
+                # Save all the images in the same subdirectory
+                output_path = os.path.join(output_subdir, os.path.basename(img_name))
+                shutil.copy(os.path.join(data_path, img_name), output_path)
     
     # Define the path to the labels subfolder
     labels_folder = os.path.join(output_dir, 'labels')
