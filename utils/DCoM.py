@@ -19,11 +19,15 @@ import pandas as pd
 import numpy as np
 import torch
 import random
+import time
 from torch.utils.data import Dataset, DataLoader
 from torchvision import datasets
 from sklearn.preprocessing import MinMaxScaler
 from tqdm import tqdm
 from scipy.spatial.distance import pdist, squareform
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 
 class DCoM:
     """
@@ -47,7 +51,10 @@ class DCoM:
         self.uSet = list(set(self.all_idx) - set(self.lSet))
 
         self.budgetSize = budgetSize
-        self.batch_size = 5
+        if device.type == 'cuda':
+            self.batch_size = 64
+        else:
+            self.batch_size = 8
         self.delta_resolution = 0.05 #Value used in initial paper
         self.k_logistic = 50 #Value used in initial paper
         self.a_logistic = 0.8 #Value used in initial paper
@@ -112,6 +119,7 @@ class DCoM:
 
         return delta0
     
+
     def construct_graph_excluding_lSet(self, delta=None, batch_size=64):
         """
         Creates a directed graph where:
@@ -123,36 +131,44 @@ class DCoM:
         if delta is None:
             delta = self.delta_avg
 
-        xs, ys, ds = [], [], []
         print(f'Start constructing graph using delta={delta}')
-        # distance computations are done in GPU
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        cuda_feats = torch.tensor(self.rel_features).to(device)
+        cuda_feats = torch.tensor(self.rel_features).to(device)  # All features on GPU
 
-        num_samples = len(self.rel_features)
+        # Prepare lists to store edges
+        xs, ys, ds = [], [], []
+        num_samples = cuda_feats.shape[0]
         num_batches = (num_samples + batch_size - 1) // batch_size
 
+        # Loop through batches
         for i in range(num_batches):
             start_idx = i * batch_size
             end_idx = min((i + 1) * batch_size, num_samples)
-            cur_feats = cuda_feats[start_idx:end_idx]
-            dist = torch.cdist(cur_feats, cuda_feats)
-            mask = dist < delta
+            cur_feats = cuda_feats[start_idx:end_idx]  # Current batch
+
+            # Compute distances between current batch and all features
+            dist = torch.cdist(cur_feats, cuda_feats, p=2)  # p=2 for Euclidean distance
+            mask = dist < delta  # Mask distances less than delta
+
+            # Get indices of edges
             x, y = mask.nonzero(as_tuple=True)
-            xs.append(x + start_idx)
+            
+            # Offset batch index to global indices and store results
+            xs.append(x + start_idx)  # Adjust x index by the batch start index
             ys.append(y)
             ds.append(dist[mask])
 
-        xs = torch.cat(xs)
-        ys = torch.cat(ys)
-        ds = torch.cat(ds)
+        # Concatenate and move results to CPU only once at the end
+        xs = torch.cat(xs).cpu()
+        ys = torch.cat(ys).cpu()
+        ds = torch.cat(ds).cpu()
 
+        # Create DataFrame from the final edge list
         df = pd.DataFrame({
-            'x': xs.cpu().numpy(),
-            'y': ys.cpu().numpy(),
-            'd': ds.cpu().numpy()
+            'x': xs.numpy(),
+            'y': ys.numpy(),
+            'd': ds.numpy()
         })
-        
+
         print(f'Before delete lSet neighbors: Graph contains {len(df)} edges.')
         return df
 
@@ -226,7 +242,6 @@ class DCoM:
                 # calculate density for each point
                 ranks = self.calculate_density(cur_df)
 
-            print(f'rank shape: {ranks.shape}, margin shape: {len(margin)}')
             cur_selection = DCoM.normalize_and_maximize(ranks, margin, 1, lambda r, e: competence_score * e + (1 - competence_score) * r)[0]
             competence_score = get_competence_score(coverage)
             print(f'Iteration is {i}.\tGraph has {len(cur_df)} edges.\tCoverage is {coverage:.3f}. \tCurr choice is {cur_selection}. \tcompetence_score={competence_score}')
@@ -245,91 +260,202 @@ class DCoM:
         print(f'Finished the selection of {len(activeSet)} samples.')
         return activeSet, remainSet, self.lSet_deltas
 
+    # def new_centroids_deltas(self, lSet_labels, pseudo_labels, budget, batch_size=64, all_labels=[]):
+    #     """
+    #     Performs binary search of the next delta values.
+    #     """
+    #     def calc_threshold(coverage):
+    #         assert 0 <= coverage <= 1, f'coverage is not between 0 to 1: {coverage}'
+    #         return 0.2 * coverage + 0.4
+
+    #     def check_purity(df, cent_label, delta):
+    #         # find all the neighbors
+
+    #         edges_from_lSet = (df.x == cent_idx) & (df.d < delta)
+    #         neighbors_idx = df.y[edges_from_lSet]
+    #         # take their neighbors and compute the ball purity (Are the labels the same as the chosen point?)
+    #         neighbors_pseudo_labels = [int(i) for i in list(map(pseudo_labels_reordered.__getitem__, neighbors_idx))]
+    #         # neighbors_real_labels = list(map(all_labels_reordered.__getitem__, neighbors_idx))
+
+    #         if len(neighbors_idx):
+    #             pseudo_purity = sum(np.array(neighbors_pseudo_labels) == cent_label) / len(neighbors_idx)
+    #             # real_purity = sum(np.array(neighbors_real_labels == cent_label)) / len(neighbors_idx)
+    #             # print(f'real_purity: {real_purity}, pseudo_purity: {pseudo_purity}')
+    #             return pseudo_purity
+    #         else :
+    #             print('No neighbors')
+    #             return 1
+
+    #     new_deltas = []
+
+    #     pseudo_labels_reordered = np.array(pseudo_labels, dtype = int)[self.relevant_indices]
+    #     #all_labels_reordered = np.array(all_labels)[self.relevant_indices]
+
+    #     df = self.construct_graph_excluding_lSet(self.max_delta, self.batch_size)
+
+    #     fully_df = self.construct_graph_excluding_lSet(self.max_delta, self.batch_size)
+
+    #     covered_samples = fully_df.y[np.isin(fully_df.x, np.arange(len(self.lSet))) & (
+    #             fully_df.d < fully_df.x.map(self.lSet_deltas_dict))].unique()
+    #     coverage = len(covered_samples) / len(self.relevant_indices)
+
+
+    #     purity_threshold = calc_threshold(coverage)
+    #     print("Current threshold: ", purity_threshold)
+
+    #     for cent_idx, centroid in enumerate(self.lSet):
+    #         if cent_idx < len(self.lSet) - budget:  # Not new points
+    #             continue
+
+    #         print(f'start calculation for cent_idx: {cent_idx}')
+    #         low_del_val = 0
+    #         max_del_val = self.max_delta
+    #         mid_del_val = (low_del_val + max_del_val) / 2
+    #         last_purity = 0
+    #         last_delta = mid_del_val
+
+    #         # range = abs(low_del_val - max_del_val)
+
+    #         while abs(low_del_val - max_del_val) > self.delta_resolution:
+    #             # curr_purity = check_purity(df, cent_label=lSet_labels[cent_idx], delta=mid_del_val)
+    #             curr_purity = check_purity(df, cent_label=pseudo_labels[centroid], delta=mid_del_val)
+    #             print("centroid: ", centroid, ". idx: ", cent_idx, ". delta = ", mid_del_val, " and purity = ", curr_purity)
+
+    #             if last_delta < mid_del_val and last_purity == purity_threshold and curr_purity < purity_threshold:
+    #                 mid_del_val = last_delta
+    #                 break
+
+    #             if curr_purity < purity_threshold:
+    #                 # if smaller than the threshold - try smaller delta
+    #                 max_del_val = mid_del_val
+    #             elif curr_purity >= purity_threshold:  # if bigger than threshold -> try bigger delta
+    #                 low_del_val = mid_del_val
+    #                 # max_del_val = low_del_val + range
+
+    #             last_purity = curr_purity
+    #             last_delta = mid_del_val
+    #             # range = abs(low_del_val - max_del_val)
+    #             mid_del_val = (low_del_val + max_del_val) / 2
+
+    #         curr_purity = check_purity(df, cent_label=lSet_labels[cent_idx], delta=mid_del_val)
+    #         print("the chosen delta: ", mid_del_val, "and its purity: ", curr_purity)
+    #         print("---------------------------------------------------------------------------")
+    #         new_deltas.append(str(round(mid_del_val, 2)))
+
+    #     self.lSet_deltas = [float(delta) for delta in new_deltas]
+    #     self.lSet_deltas_dict = dict(zip(np.arange(len(self.lSet)), self.lSet_deltas))
+    #     print("All new deltas: ", '\n')
+    #     return new_deltas
+
     def new_centroids_deltas(self, lSet_labels, pseudo_labels, budget, batch_size=64, all_labels=[]):
         """
-        Performs binary search of the next delta values.
+        Optimized function for calculating delta values for centroids with dynamic adjustment for CPU and GPU.
         """
+
         def calc_threshold(coverage):
             assert 0 <= coverage <= 1, f'coverage is not between 0 to 1: {coverage}'
             return 0.2 * coverage + 0.4
 
-        def check_purity(df, cent_label, delta):
-            # find all the neighbors
-
-            edges_from_lSet = (df.x == cent_idx) & (df.d < delta)
-            neighbors_idx = df.y[edges_from_lSet]
-            # take their neighbors and compute the ball purity (Are the labels the same as the chosen point?)
-            neighbors_pseudo_labels = [int(i) for i in list(map(pseudo_labels_reordered.__getitem__, neighbors_idx))]
-            # neighbors_real_labels = list(map(all_labels_reordered.__getitem__, neighbors_idx))
-
-            if len(neighbors_idx):
-                pseudo_purity = sum(np.array(neighbors_pseudo_labels) == cent_label) / len(neighbors_idx)
-                # real_purity = sum(np.array(neighbors_real_labels == cent_label)) / len(neighbors_idx)
-                # print(f'real_purity: {real_purity}, pseudo_purity: {pseudo_purity}')
-                return pseudo_purity
-            else :
-                print('No neighbors')
-                return 1
-
-        new_deltas = []
+        # Set device for GPU or CPU
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        is_gpu = device.type == "cuda"
+        
+        # Adjust batch size for CPU usage
+        if not is_gpu:
+            batch_size = min(batch_size, 32)  # Reduce batch size for CPU
 
         pseudo_labels_reordered = np.array(pseudo_labels, dtype = int)[self.relevant_indices]
-        #all_labels_reordered = np.array(all_labels)[self.relevant_indices]
-
         df = self.construct_graph_excluding_lSet(self.max_delta, self.batch_size)
-
         fully_df = self.construct_graph_excluding_lSet(self.max_delta, self.batch_size)
 
-        covered_samples = fully_df.y[np.isin(fully_df.x, np.arange(len(self.lSet))) & (
-                fully_df.d < fully_df.x.map(self.lSet_deltas_dict))].unique()
+        # Prepare data on the correct device
+        pseudo_labels_reordered = torch.tensor(np.array(pseudo_labels, dtype=int)[self.relevant_indices], device=device)
+        df_x = torch.tensor(df.x.values, device=device)
+        df_y = torch.tensor(df.y.values, device=device)
+        df_d = torch.tensor(df.d.values, device=device)
+
+        # Calculate the initial purity threshold based on coverage
+        covered_samples = fully_df.y[
+            (fully_df.x.isin(np.arange(len(self.lSet)))) & (fully_df.d < fully_df.x.map(self.lSet_deltas_dict))
+        ].unique()
         coverage = len(covered_samples) / len(self.relevant_indices)
-
-
         purity_threshold = calc_threshold(coverage)
-        print("Current threshold: ", purity_threshold)
+        print("Initial purity threshold:", purity_threshold)
 
-        for cent_idx, centroid in enumerate(self.lSet):
-            if cent_idx < len(self.lSet) - budget:  # Not new points
-                continue
+        # Initialize low and high delta values for binary search
+        low_deltas = torch.zeros(len(self.lSet), device=device)
+        high_deltas = torch.full((len(self.lSet),), self.max_delta, device=device)
+        chosen_deltas = torch.empty(len(self.lSet), device=device)  # Final chosen delta values
+        delta_resolution = self.delta_resolution  # Threshold for convergence in binary search
 
-            print(f'start calculation for cent_idx: {cent_idx}')
-            low_del_val = 0
-            max_del_val = self.max_delta
-            mid_del_val = (low_del_val + max_del_val) / 2
-            last_purity = 0
-            last_delta = mid_del_val
+        # Helper function for batch purity check
+        def check_purity_batch(cent_idx_batch, cent_labels_batch, deltas_batch):
+            """
+            Optimized purity check batch function with adjustments for CPU performance.
+            """
+            purities = torch.ones(len(cent_idx_batch), device=device)  # Default purity to 1
 
-            # range = abs(low_del_val - max_del_val)
+            # If on CPU, use a more memory-efficient approach
+            if not is_gpu:
+                for i, (cent_idx, cent_label, delta) in enumerate(zip(cent_idx_batch, cent_labels_batch, deltas_batch)):
+                    neighbor_mask = (df_x.cpu().numpy() == cent_idx) & (df_d.cpu().numpy() < delta)
+                    neighbors_idx = df_y[neighbor_mask] if len(neighbor_mask) > 0 else []
 
-            while abs(low_del_val - max_del_val) > self.delta_resolution:
-                # curr_purity = check_purity(df, cent_label=lSet_labels[cent_idx], delta=mid_del_val)
-                curr_purity = check_purity(df, cent_label=pseudo_labels[centroid], delta=mid_del_val)
-                print("centroid: ", centroid, ". idx: ", cent_idx, ". delta = ", mid_del_val, " and purity = ", curr_purity)
+                    if len(neighbors_idx) > 0:
+                        neighbors_pseudo_labels = pseudo_labels_reordered[neighbors_idx]
+                        same_label_count = (neighbors_pseudo_labels == cent_label).sum().item()
+                        purity = same_label_count / len(neighbors_idx)
+                        purities[i] = purity
+                    
+                    else : # No neighbors
+                        purities[i] = 1
+            else:
+                # GPU-specific vectorized operations
+                for i, (cent_idx, cent_label, delta) in enumerate(zip(cent_idx_batch, cent_labels_batch, deltas_batch)):
+                    neighbor_mask = (df_x == cent_idx) & (df_d < delta)
+                    neighbors_idx = df_y[neighbor_mask]
 
-                if last_delta < mid_del_val and last_purity == purity_threshold and curr_purity < purity_threshold:
-                    mid_del_val = last_delta
-                    break
+                    if neighbors_idx.numel() > 0:
+                        neighbors_pseudo_labels = pseudo_labels_reordered[neighbors_idx]
+                        same_label_count = (neighbors_pseudo_labels == cent_label).sum().float()
+                        purity = same_label_count / len(neighbors_idx)
+                        purities[i] = purity
 
-                if curr_purity < purity_threshold:
-                    # if smaller than the threshold - try smaller delta
-                    max_del_val = mid_del_val
-                elif curr_purity >= purity_threshold:  # if bigger than threshold -> try bigger delta
-                    low_del_val = mid_del_val
-                    # max_del_val = low_del_val + range
+                    else : # No neighbors
+                        print('No neighbors') 
+                        purities[i] = 1
 
-                last_purity = curr_purity
-                last_delta = mid_del_val
-                # range = abs(low_del_val - max_del_val)
-                mid_del_val = (low_del_val + max_del_val) / 2
+            return purities
 
-            curr_purity = check_purity(df, cent_label=lSet_labels[cent_idx], delta=mid_del_val)
-            print("the chosen delta: ", mid_del_val, "and its purity: ", curr_purity)
-            print("---------------------------------------------------------------------------")
-            new_deltas.append(str(round(mid_del_val, 2)))
+        # Batched binary search for `delta` values
+        for batch_start in range(0, len(self.lSet), batch_size):
+            batch_end = min(batch_start + batch_size, len(self.lSet))
+            batch_centroids = torch.tensor(range(batch_start, batch_end), device=device)
 
-        self.lSet_deltas = [float(delta) for delta in new_deltas]
-        self.lSet_deltas_dict = dict(zip(np.arange(len(self.lSet)), self.lSet_deltas))
-        print("All new deltas: ", '\n')
+            # Continue binary search until convergence for each centroid in batch
+            iteration = 0  # Track iteration count for debugging
+
+            while torch.max(high_deltas[batch_centroids] - low_deltas[batch_centroids]) > delta_resolution:
+                mid_deltas = (low_deltas[batch_centroids] + high_deltas[batch_centroids]) / 2
+                cent_labels_batch = torch.tensor([lSet_labels[i] for i in batch_centroids], device=device)
+
+                # Check purity for the batch
+                purities = check_purity_batch(batch_centroids, cent_labels_batch, mid_deltas)
+
+                # Update `low_deltas` or `high_deltas` based on purity results
+                high_deltas[batch_centroids] = torch.where(purities < purity_threshold, mid_deltas, high_deltas[batch_centroids])
+                low_deltas[batch_centroids] = torch.where(purities >= purity_threshold, mid_deltas, low_deltas[batch_centroids])
+
+                # Print progress for debugging
+                iteration += 1
+
+            # Assign final chosen delta values for the batch after convergence
+            chosen_deltas[batch_centroids] = (low_deltas[batch_centroids] + high_deltas[batch_centroids]) / 2
+            print(f"Batch {batch_start // batch_size}/{len(self.lSet)//batch_size} completed in {iteration} iterations.")
+        # Convert final delta values back to CPU for any further processing if needed
+        new_deltas = chosen_deltas.cpu().tolist()
+        self.lSet_deltas = new_deltas
+        self.lSet_deltas_dict = dict(zip(np.arange(len(self.lSet)), new_deltas))
         return new_deltas
 
     def calculate_density(self, df):

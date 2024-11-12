@@ -46,14 +46,15 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 #             ).to(device)
 
 mode = 'classification'
-data_path = r'/home/abonin/Desktop/datasets/sample_PFD'
+data_path = r'/home/abonin/Desktop/datasets/sample_Luchey'
 model_path = r'/home/abonin/Desktop/Classification-model/models/Run_2024-10-16_14-15-17.pth'
 model = EffNetB0(num_classes=2, model_path = model_path, extract_features = True).to(device)
 
 budgetSize = 1000
 batch_size = 128
 
-SAVE = True
+save_pred_df = True
+save_samples = True
 
 output_dir = os.path.join(data_path + '/DCoM')
 
@@ -78,7 +79,7 @@ if __name__ == '__main__':
 
     # Iterate over the images in the directory
     img_list = [fname for fname in os.listdir(data_path) if fname.endswith(('jpg', 'jpeg', 'png'))]
-    img_list = [img_name for img_name in img_list[:7000]]
+    img_list = [img_name for img_name in img_list[:]]
 
     # Initialize a DataFrame to store file paths and prediction probabilities
     pred_df = pd.DataFrame(columns=['img_name', 'pred', 'delta', 'true_label'])
@@ -114,13 +115,15 @@ if __name__ == '__main__':
 
     # Define the transform and dataset
     dataset = ImageDataset(img_list, data_path, device=device)
-    print(f'Number of images: {len(dataset)}')
+    print(f'Number of images: {len(dataset)} \n')
 
     data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=custom_collate)
 
     # Process images in batches
     model = model.to(device)
     model.eval()
+
+    print('Starting feature extraction...', end='\n')
 
     # Batch processing to optimize GPU usage
     for img_names, img_batch in tqdm(data_loader):
@@ -214,24 +217,26 @@ if __name__ == '__main__':
     dcom = DCoM(features, lSet, budgetSize = budgetSize, lSet_deltas=lSet_deltas)
     active_set, new_uset, active_deltas = dcom.select_samples(pred_df)
 
-    # # Save the sampled images to a new directory
-    # output_subdir = os.path.join(output_dir, 'samples')
+    if save_samples:
+        # Save the sampled images to a new directory
+        output_subdir = os.path.join(output_dir, 'samples')
 
-    # if not os.path.exists(output_subdir):
-    #     os.makedirs(output_subdir, exist_ok=True)
+        if not os.path.exists(output_subdir):
+            os.makedirs(output_subdir, exist_ok=True)
 
     for i, idx in enumerate(active_set):
         pred_df.iloc[int(idx), pred_df.columns.get_loc('delta')] = active_deltas[i]
         img_name = pred_df.iloc[int(idx)]['img_name']
         pseudo_label = str(int(pseudo_labels[int(idx)]))
 
-    #     # Create a subdirectory for this pseudo label if it doesn't exist
-    #     label_subdir = os.path.join(output_subdir, pseudo_label)
-    #     os.makedirs(label_subdir, exist_ok=True)
-        
-    #     # Copy the image to the corresponding pseudo label subdirectory
-    #     output_path = os.path.join(label_subdir, os.path.basename(img_name))
-    #     shutil.copy(os.path.join(data_path, img_name), output_path)
+        if save_samples:
+            # Create a subdirectory for this pseudo label if it doesn't exist
+            label_subdir = os.path.join(output_subdir, pseudo_label)
+            os.makedirs(label_subdir, exist_ok=True)
+            
+            # Copy the image to the corresponding pseudo label subdirectory
+            output_path = os.path.join(label_subdir, os.path.basename(img_name))
+            shutil.copy(os.path.join(data_path, img_name), output_path)
     
     # Define the path to the labels subfolder
     labels_folder = os.path.join(output_dir, 'labels')
@@ -261,7 +266,7 @@ if __name__ == '__main__':
     # plt.show()
 
     #endregion
-    if SAVE:
+    if save_pred_df:
         with open(os.path.join(output_dir,'pred_df.pkl'), 'wb') as f:
             pickle.dump(pred_df, f)
     
@@ -325,7 +330,7 @@ if __name__ == '__main__':
     print('Finished udating deltas \n')
     #endregion
     #region Plot features
-
+    print('Plotting features...')
     # Visualize the features in 2D using t-SNE
     tsne = TSNE(n_components=2, random_state = 42)
     features_2d = tsne.fit_transform(features)
@@ -334,25 +339,24 @@ if __name__ == '__main__':
     sampled_points = features_2d[active_set]
     labeled_points =  features_2d[lSet]
 
-    S = min(15000 / features_2d.shape[0], 50) # Scale the size of the points based on the number of features
+    S = 15000 / features_2d.shape[0]
 
     plt.figure(figsize=(12, 6))
-    plt.scatter(features_2d[:, 0], features_2d[:, 1], c=pseudo_labels, cmap='viridis', s=S, label = 'Predicted pseudo-labels')
-    # plt.scatter(sampled_points_2d[:, 0], sampled_points_2d[:, 1], c=pred_df.loc[pred_df['true_label'].notna(),'true_label'], cmap='viridis', s=31)
     # Add circles of radius delta around points from lSet
     ax = plt.gca()
     for i, point_idx in enumerate(lSet):
         point_2d = features_2d[point_idx]
         delta = float(lSet_deltas[i])
         if len(lSet) > 50 :
-            circle = Circle(point_2d, radius=delta, fill=True, facecolor='lightblue', alpha=0.1, linewidth=0.2)
+            circle = Circle(point_2d, radius=delta, fill=True, facecolor='lightblue', alpha=0.2, linewidth=0.2)
         else :
             circle = Circle(point_2d, radius=delta, color='blue', fill=False, linestyle='-', linewidth=0.5)
         ax.add_patch(circle)
-
+    # Highlight the sampled points and labeled points in a different color or marker (e.g., red stars)
     plt.scatter(labeled_points[:, 0], labeled_points[:, 1], c='green', edgecolors='green', marker='o', s=S*1.04, label='Labeled points')
-    # Highlight the sampled points in a different color or marker (e.g., red stars)
     plt.scatter(sampled_points[:, 0], sampled_points[:, 1], c='red', edgecolors='red', marker='o', s=S*1.05, label='Sampled points')
+    plt.scatter(features_2d[:, 0], features_2d[:, 1], c=pseudo_labels, cmap='viridis', s=S, label = 'Predicted pseudo-labels')
+    # plt.scatter(sampled_points_2d[:, 0], sampled_points_2d[:, 1], c=pred_df.loc[pred_df['true_label'].notna(),'true_label'], cmap='viridis', s=31)
     plt.colorbar()
     plt.title("Features Colored by Predicted Labels")
 
@@ -363,7 +367,7 @@ if __name__ == '__main__':
     plt.savefig(plot_path)
     plt.show()
 
-    if SAVE:
+    if save_pred_df:
         with open(os.path.join(output_dir,'pred_df.pkl'), 'wb') as f:
             pickle.dump(pred_df, f)
         print('Saved pred_df file \n')
