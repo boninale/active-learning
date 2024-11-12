@@ -1,3 +1,24 @@
+"""
+Image Preprocessing and Data Loading Script
+
+This script provides functionality for loading, preprocessing, and creating data loaders for image datasets.
+It includes an optimized Dataset class for handling images, custom collate functions, and functions for creating
+training and validation data loaders.
+
+Functions:
+- ImageDataset: Custom Dataset class for loading and preprocessing images.
+- custom_collate: Custom collate function to handle batches with None values.
+- create_training_generators: Function to create training and validation data loaders.
+- preprocess_image: Function to preprocess a single image.
+
+Usage:
+1. Define the source directory, validation directory (optional), and other parameters.
+2. Create data loaders using the create_training_generators function.
+3. Use the ImageDataset class for custom data loading and preprocessing.
+4. Preprocess individual images using the preprocess_image function.
+
+"""
+
 import torch
 import os
 from torchvision import datasets, transforms

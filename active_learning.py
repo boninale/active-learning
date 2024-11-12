@@ -83,27 +83,26 @@ if __name__ == '__main__':
     # Initialize a DataFrame to store file paths and prediction probabilities
     pred_df = pd.DataFrame(columns=['img_name', 'pred', 'delta', 'true_label'])
     pred_backup = False 
-    # pred_df['img_name'] = img_list
 
 
-    # # Check if the pickle files exist
-    # if os.path.exists(features_file) :
-    #     print("Loading features from pickle files...")
-    #     with open(features_file, 'rb') as f:
-    #         features = pickle.load(f)
+    # Check if the pickle files exist
+    if os.path.exists(features_file) :
+        print("Loading features from pickle files...")
+        with open(features_file, 'rb') as f:
+            features = pickle.load(f)
 
-    # if os.path.exists(pseudo_labels_file):
-    #     print("Loading predictions from pickle files...")
+    if os.path.exists(pseudo_labels_file):
+        print("Loading predictions from pickle files...")
 
-    #     with open(pseudo_labels_file, 'rb') as f:
-    #         pseudo_labels = pickle.load(f)
+        with open(pseudo_labels_file, 'rb') as f:
+            pseudo_labels = pickle.load(f)
 
-    # if os.path.exists(pred_file): #Make sure it is the right file
-    #     print("Loading pred_df from pickle files...")
-    #     pred_backup = True
-    #     # Load the variables from the pickle files
-    #     with open(pred_file, 'rb') as f:
-    #         pred_df = pickle.load(f)
+    if os.path.exists(pred_file): #Make sure it is the right file
+        print("Loading pred_df from pickle files...")
+        pred_backup = True
+        # Load the variables from the pickle files
+        with open(pred_file, 'rb') as f:
+            pred_df = pickle.load(f)
 
 
     if mp.get_start_method(allow_none=True) != 'spawn':
@@ -196,14 +195,10 @@ if __name__ == '__main__':
 
     #endregion
 
-    # with open(os.path.join(output_dir,'features.pkl'), 'wb') as f:
-    #     pickle.dump(features, f)
-
-    # with open(os.path.join(output_dir, 'pseudo_labels.pkl'), 'wb') as f:
-    #     pickle.dump(pseudo_labels, f)
+    with open(os.path.join(output_dir, 'pseudo_labels.pkl'), 'wb') as f:
+        pickle.dump(pseudo_labels, f)
     
-    # print(f'Saved features and pseudo labels files \n')
-
+    print(f'Saved features and pseudo labels files \n')
 
     #region Dcom sample
 
@@ -214,11 +209,11 @@ if __name__ == '__main__':
     dcom = DCoM(features, lSet, budgetSize = budgetSize, lSet_deltas=lSet_deltas)
     active_set, new_uset, active_deltas = dcom.select_samples(pred_df)
 
-    # # Save the sampled images to a new directory
-    # output_subdir = os.path.join(output_dir, 'samples')
+    # Save the sampled images to a new directory
+    output_subdir = os.path.join(output_dir, 'samples')
 
-    # if not os.path.exists(output_subdir):
-    #     os.makedirs(output_subdir, exist_ok=True)
+    if not os.path.exists(output_subdir):
+        os.makedirs(output_subdir, exist_ok=True)
 
     for i, idx in enumerate(active_set):
         pred_df.iloc[int(idx), pred_df.columns.get_loc('delta')] = active_deltas[i]
